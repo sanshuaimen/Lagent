@@ -1,0 +1,68 @@
+server:
+  port: 8081
+spring:
+  application:
+    name: hmdp
+  datasource:
+    driver-class-name: com.mysql.jdbc.Driver
+    url: jdbc:mysql://127.0.0.1:3306/hmdp?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true&useSSL=false
+    username: root
+    password: 123456
+  redis:
+    host: localhost
+    port: 6379
+    lettuce:
+      pool:
+        max-active: 10
+        max-idle: 10
+        min-idle: 1
+        time-between-eviction-runs: 10s
+  jackson:
+    default-property-inclusion: non_null # JSON处理时忽略非空字段
+
+mybatis-plus:
+  type-aliases-package: com.hmdp.entity # 别名扫描包
+
+# 【导购 Agent 模块】暴露 metrics 端点，用于查看 agent_* 系列指标。
+# Spring Boot 默认只开放 health/info，不加上这段 curl /actuator/metrics 会 404。
+# 注意：/actuator/metrics 会暴露内部指标，生产环境应改为只在内网管理端口暴露，或用 Spring Security 限制访问。
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+
+logging:
+  level:
+    com.hmdp: debug
+  pattern:
+    dateformat: mm:ss.SSS
+
+# 【秒杀优惠券信息多级缓存改造】本地缓存的配置项(刷新时间、过期时间)、Redis缓存的过期时间
+hmdp:
+  cache:
+    voucher-list:
+      mode: mysql
+      refresh-after-write: 5s
+      expire-after-write: 10m
+      redis-ttl: 30m
+
+  # 【导购 Agent 模块】导购助手相关配置，对应 com.hmdp.agent.config.AgentProperties
+  # 注意：API 密钥不在这里配置，由 SDK 从环境变量 ANTHROPIC_API_KEY 读取
+  agent:
+    enabled: true               # 置为 false 可整体关闭 Agent，用户/商铺/秒杀等原有功能不受影响
+    model: claude-opus-4-8      # 使用的 Claude 模型
+    max-tokens: 4096            # 单次模型响应最大输出 token
+    max-tool-rounds: 5          # 单轮对话内最多几轮「请求工具 → 执行 → 回填」，防止死循环
+    max-history-turns: 10       # 带进上下文的历史对话轮数，控制 token 成本
+    session-ttl: 30m            # 会话历史与推荐锚点在 Redis 中的存活时间
+    # 单次模型请求超时。必须显式设置：SDK 默认 10 分钟，远大于 SSE 的 120 秒，
+    # 不设置会让线程被白占、且超时不会由我们主动抛出因而查不到日志。应小于 SSE 超时。
+    request-timeout: 60s
+    executor-threads: 8         # Agent 专用线程池的核心线程数，与 Tomcat 业务线程池隔离
+    # 线程池等待队列容量。必须有界：无界队列会让请求静默堆积，用户干等到超时也看不到反馈。
+    # 队列满时直接拒绝并回一条明确的错误，而不是悄悄排队。
+    executor-queue-capacity: 50
+    # SSE 心跳间隔。模型思考/工具执行期间连接上无字节流动，Nginx(默认60s)等代理会判定空闲而断连，
+    # 定期推注释帧保活。应明显小于链路上最短的空闲超时；设为 0 或负数可关闭。
+    heartbeat-interval: 15s
